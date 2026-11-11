@@ -1,203 +1,282 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
+import os
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import seaborn as sns
+import streamlit as st
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-# Thang màu chuẩn cho seaborn/matplotlib
-sns.set_theme(style="whitegrid")
+# Cấu hình trang Streamlit
+st.set_page_config(
+    page_title="Dự đoán giá nhà bằng K-Means", page_layout="wide"
+)
 
-st.set_page_config(page_title="Dự đoán giá nhà - K-Means Clustering", layout="wide")
+st.title("🏡 Ứng dụng Dự đoán Giá nhà & Phân cụm K-Means")
+st.markdown(
+    "Mô hình học máy phân cụm dữ liệu bất động sản và dự đoán giá nhà."
+)
 
-st.title("🏡 Đồ án Phân tích & Dự đoán Giá nhà bằng K-Means Clustering")
+# ---------------------------------------------------------
+# Sidebar: Load dữ liệu và tham số
+# ---------------------------------------------------------
+st.sidebar.header("⚙️ Cấu hình dữ liệu & Tham số")
 
-# Định nghĩa tập đặc trưng và biến mục tiêu
-FEATURES = ['OverallQual', 'GrLivArea', 'GarageCars', 'TotalBsmtSF', 'HouseAge']
-TARGET = 'SalePrice'
+train_file = st.sidebar.file_uploader(
+    "Tải lên file Train (Excel)", type=["xlsx"]
+)
+test_file = st.sidebar.file_uploader("Tải lên file Test (Excel)", type=["xlsx"])
 
-# --- 1. ĐỌC DỮ LIỆU ---
+
 @st.cache_data
-def load_data():
-    try:
-        train_df = pd.read_excel('nhom4_train_data.xlsx')
-        test_df = pd.read_excel('nhom4_test_data.xlsx')
-    except Exception:
-        # Trong trường hợp file ở thư mục khác hoặc upload trực tiếp
-        train_df = pd.read_excel('nhom4_train_data_2.xlsx')
-        test_df = pd.read_excel('nhom4_test_data_2.xlsx')
-    return train_df, test_df
+def load_data(uploaded_train, uploaded_test):
+    if uploaded_train is not None:
+        df_train = pd.read_excel(uploaded_train)
+    elif os.path.exists("nhom4_train_data.xlsx"):
+        df_train = pd.read_excel("nhom4_train_data.xlsx")
+    elif os.path.exists("nhom4_train_data_2.xlsx"):
+        df_train = pd.read_excel("nhom4_train_data_2.xlsx")
+    else:
+        df_train = None
 
-try:
-    train_df, test_df = load_data()
-except Exception as e:
-    st.error(f"Không thể đọc file dữ liệu. Vui lòng kiểm tra file excel đầu vào! Chi tiết lỗi: {e}")
+    if uploaded_test is not None:
+        df_test = pd.read_excel(uploaded_test)
+    elif os.path.exists("nhom4_test_data.xlsx"):
+        df_test = pd.read_excel("nhom4_test_data.xlsx")
+    elif os.path.exists("nhom4_test_data_2.xlsx"):
+        df_test = pd.read_excel("nhom4_test_data_2.xlsx")
+    else:
+        df_test = None
+
+    return df_train, df_test
+
+
+train_df, test_df = load_data(train_file, test_file)
+
+if train_df is None or test_df is None:
+    st.error(
+        "Vui lòng tải lên file dữ liệu Train và Test hoặc đặt file `nhom4_train_data.xlsx` và `nhom4_test_data.xlsx` cùng thư mục code!"
+    )
     st.stop()
 
-# --- SIDEBAR: CẤU HÌNH & DỰ ĐOÁN ĐỒNG THỜI ---
-st.sidebar.header("⚙️ Cấu hình Mô hình")
-k_clusters = st.sidebar.slider("Số lượng cụm (K):", min_value=2, max_value=8, value=3, step=1)
+features = [
+    "OverallQual",
+    "GrLivArea",
+    "GarageCars",
+    "TotalBsmtSF",
+    "HouseAge",
+]
+target = "SalePrice"
 
-st.sidebar.header("🔮 Nhập thông số nhà mới để dự đoán")
-user_input = {}
-for col in FEATURES:
-    val_min = float(train_df[col].min())
-    val_max = float(train_df[col].max())
-    val_mean = float(train_df[col].mean())
-    user_input[col] = st.sidebar.number_input(f"{col}:", value=round(val_mean, 2), min_value=val_min, max_value=val_max)
+k_clusters = st.sidebar.slider("Chọn số lượng cụm (K)", 2, 10, 3)
 
-# --- THUẬT TOÁN K-MEANS TRÊN TẬP TRAIN ---
-X_train = train_df[FEATURES]
-y_train = train_df[TARGET]
+# ---------------------------------------------------------
+# Khởi tạo & Huấn luyện thuật toán K-Means từ đầu
+# ---------------------------------------------------------
+X_train = train_df[features].values
+y_train = train_df[target].values
 
-# Khởi tạo và huấn luyện mô hình K-Means
-kmeans_model = KMeans(n_clusters=k_clusters, random_state=42, n_init=10)
-train_df['Cluster'] = kmeans_model.fit_predict(X_train)
+X_test = test_df[features].values
+y_test = test_df[target].values
 
-# Tâm cụm (Centroids)
-centroids = kmeans_model.cluster_centers_
-centroids_df = pd.DataFrame(centroids, columns=FEATURES)
-centroids_df.index = [f"Cụm {i}" for i in range(k_clusters)]
+# Fit K-Means
+kmeans = KMeans(n_clusters=k_clusters, random_state=42, n_init=10)
+train_df["Cluster"] = kmeans.fit_predict(X_train)
+centroids = kmeans.cluster_centers_
 
-# Giá nhà trung bình từng cụm
-cluster_price_map = train_df.groupby('Cluster')[TARGET].mean().to_dict()
-centroids_df['SalePrice_TrungBình'] = [cluster_price_map[i] for i in range(k_clusters)]
+# Tính giá trị trung bình SalePrice của từng cụm trên Train
+cluster_price_map = train_df.groupby("Cluster")[target].mean().to_dict()
 
-# 📑 TAB GIAO DIỆN CHÍNH
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Dữ liệu gốc & Elbow", 
-    "🎯 Cụm & Centroid (K=3)", 
-    "📈 Đánh giá trên Test Set", 
-    "🔮 Dự đoán Nhà mới"
-])
+# Dự đoán trên tập Test:
+# 1. Tính khoảng cách tới centroid gần nhất
+test_df["Cluster"] = kmeans.predict(X_test)
+# 2. Gán giá dự đoán bằng giá trung bình của cụm đó
+test_df["Predicted_SalePrice"] = test_df["Cluster"].map(cluster_price_map)
 
-# --- TAB 1: DỮ LIỆU & PHƯƠNG PHÁP ELBOW ---
+# ---------------------------------------------------------
+# Giao diện chính tab
+# ---------------------------------------------------------
+tab1, tab2, tab3, tab4 = st.tabs(
+    [
+        "📋 Dữ liệu & Phân cụm",
+        "📈 Biểu đồ Elbow & Cụm",
+        "📊 Dự đoán & Đánh giá Test",
+        "🔮 Dự đoán nhà mới",
+    ]
+)
+
+# TAB 1: DỮ LIỆU & PHÂN CỤM
 with tab1:
-    st.subheader("1. XEM TRƯỚC DỮ LIỆU GỐC (GIỮ NGUYÊN SỐ LIỆU)")
+    st.subheader("1. Xem trước dữ liệu gốc")
     col1, col2 = st.columns(2)
     with col1:
-        st.write("##### Tập Huấn luyện (Train Data - 800 mẫu)")
-        st.dataframe(train_df[FEATURES + [TARGET]].head(10))
+        st.write(f"**Tập huấn luyện (Train): {train_df.shape[0]} dòng**")
+        st.dataframe(train_df.head(10))
     with col2:
-        st.write("##### Tập Kiểm thử (Test Data - 200 mẫu)")
-        st.dataframe(test_df[FEATURES + [TARGET]].head(10))
+        st.write(f"**Tập kiểm thử (Test): {test_df.shape[0]} dòng**")
+        st.dataframe(test_df.head(10))
 
-    st.subheader("2. XÁC ĐỊNH ĐIỂM GÃY ELBOW (WCSS)")
-    wcss_list = []
-    k_range = range(1, 11)
-    for k in k_range:
-        km = KMeans(n_clusters=k, random_state=42, n_init=10)
-        km.fit(X_train)
-        wcss_list.append(km.inertia_)
+    st.subheader("2. Tâm các cụm (Centroids) & Đặc điểm trung bình")
+    centroid_df = pd.DataFrame(centroids, columns=features)
+    centroid_df["SalePrice_Mean"] = [
+        cluster_price_map[i] for i in range(k_clusters)
+    ]
+    centroid_df.index.name = "Cluster"
+    st.dataframe(
+        centroid_df.style.highlight_max(axis=0, color="lightgreen")
+    )
 
-    wcss_df = pd.DataFrame({"Số cụm K": list(k_range), "WCSS": wcss_list})
-    
-    col_wcss1, col_wcss2 = st.columns([1, 2])
-    with col_wcss1:
-        st.write("Bảng giá trị WCSS theo K:")
-        st.dataframe(wcss_df.style.format({"WCSS": "{:,.2f}"}))
-    with col_wcss2:
-        fig_elbow, ax_elbow = plt.subplots(figsize=(7, 4))
-        ax_elbow.plot(k_range, wcss_list, marker='o', color='crimson', linewidth=2)
-        ax_elbow.set_title("Biểu đồ Elbow Method (WCSS theo K)")
+    st.markdown("### 💡 Giải thích ý nghĩa các cụm (K=3):")
+    st.markdown(
+        """
+    - **Cụm 0 (Nhà mới, chất lượng cao):** Chỉ số `OverallQual` cao, `HouseAge` rất thấp (âm - nhà mới xây), giá trung bình cao.
+    - **Cụm 1 (Nhà bình dân):** Chỉ số `OverallQual` âm (dưới trung bình), diện tích hầm và nhà xe ở mức vừa phải.
+    - **Cụm 2 (Nhà lâu năm, Garage rộng):** `OverallQual` tốt, `GarageCars` cao nhưng `HouseAge` lớn (nhà đã xây dựng lâu).
+    """
+    )
+
+# TAB 2: BIỂU ĐỒ ELBOW VÀ PHÂN CỤM
+with tab2:
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.subheader("Biểu đồ Elbow xác định K tối ưu")
+        wcss = []
+        K_range = range(1, 11)
+        for k in K_range:
+            km = KMeans(n_clusters=k, random_state=42, n_init=10)
+            km.fit(X_train)
+            wcss.append(km.inertia_)
+
+        fig_elbow, ax_elbow = plt.subplots(figsize=(6, 4))
+        ax_elbow.plot(K_range, wcss, "bo-", linewidth=2, markersize=8)
+        ax_elbow.axvline(
+            x=3, color="red", linestyle="--", label="Điểm Elbow đề xuất (K=3)"
+        )
         ax_elbow.set_xlabel("Số lượng cụm K")
         ax_elbow.set_ylabel("WCSS (Within-Cluster Sum of Squares)")
-        ax_elbow.axvline(x=3, color='navy', linestyle='--', label='Điểm gãy tối ưu (K=3)')
+        ax_elbow.set_title("Phương pháp Elbow")
         ax_elbow.legend()
+        ax_elbow.grid(True)
         st.pyplot(fig_elbow)
 
-# --- TAB 2: CHI TIẾT TÂM CỤM & KHOẢNG CÁCH CENTROID ---
-with tab2:
-    st.subheader("1. BẢNG TÂM CENTROID VÀ ĐẶC ĐIỂM TRUNG BÌNH TỪNG CỤM")
-    st.dataframe(centroids_df.style.format("{:.4f}"))
-
-    st.subheader("2. TÍNH KHOẢNG CÁCH EUCLIDEAN VÀ GÁN CỤM CHO TẬP TRAIN")
-    # Tính khoảng cách từ từng mẫu đến từng Centroid
-    distances = np.linalg.norm(X_train.values[:, np.newaxis] - centroids, axis=2)
-    dist_cols = [f"KhoangCach_Cum_{i}" for i in range(k_clusters)]
-    dist_df = pd.DataFrame(distances, columns=dist_cols)
-    
-    train_detail = pd.concat([X_train, dist_df, train_df[['Cluster', TARGET]]], axis=1)
-    st.write("Bảng tính khoảng cách chi tiết tới Centroids (10 mẫu đầu tập Train):")
-    st.dataframe(train_detail.head(10).style.format({c: "{:.4f}" for c in dist_cols}))
-
-    st.subheader("3. BIỂU ĐỒ PHÂN BỐ GIÁ VÀ CỤM")
-    col_fig1, col_fig2 = st.columns(2)
-    with col_fig1:
+    with col_b:
+        st.subheader("Biểu đồ phân bố giá nhà (SalePrice)")
         fig_dist, ax_dist = plt.subplots(figsize=(6, 4))
-        sns.histplot(train_df[TARGET], kde=True, color='teal', ax=ax_dist)
-        ax_dist.set_title("Biểu đồ phân bố Giá nhà (SalePrice)")
+        sns.histplot(
+            train_df[target], kde=True, ax=ax_dist, color="skyblue"
+        )
+        ax_dist.set_title("Phân bố biến mục tiêu SalePrice trên tập Train")
+        ax_dist.set_xlabel("Giá nhà (SalePrice)")
+        ax_dist.set_ylabel("Tần suất")
         st.pyplot(fig_dist)
 
-    with col_fig2:
-        fig_cluster, ax_cluster = plt.subplots(figsize=(6, 4))
-        scatter = ax_cluster.scatter(X_train['OverallQual'], X_train['GrLivArea'], c=train_df['Cluster'], cmap='viridis', alpha=0.6)
-        ax_cluster.scatter(centroids[:, 0], centroids[:, 1], c='red', s=200, marker='X', label='Centroids')
-        ax_cluster.set_xlabel('OverallQual (Đã chuẩn hóa)')
-        ax_cluster.set_ylabel('GrLivArea (Đã chuẩn hóa)')
-        ax_cluster.set_title('Phân cụm nhà (OverallQual vs GrLivArea)')
-        ax_cluster.legend()
-        st.pyplot(fig_cluster)
+    st.subheader("Biểu đồ phân cụm (Giảm chiều dữ liệu PCA 2D)")
+    pca = PCA(n_components=2)
+    X_train_pca = pca.fit_transform(X_train)
+    centroids_pca = pca.transform(centroids)
 
-    st.subheader("4. GIẢI THÍCH Ý NGHĨA TỪNG CỤM (K=3)")
-    st.markdown("""
-    * **Cụm 0 (Chất lượng cao & Nhà mới):** Có `OverallQual` cao (0.69) và `HouseAge` rất thấp (-0.85, nhà mới xây). Giá nhà trung bình cao nhất (~391,778 USD).
-    * **Cụm 1 (Chất lượng trung bình/thấp):** Có `OverallQual` thấp (-1.00), diện tích garage nhỏ. Giá nhà trung bình thấp hơn (~387,431 USD).
-    * **Cụm 2 (Garage rộng & Nhà cũ hơn):** Có `GarageCars` cao nhất (0.55), nhưng `HouseAge` cao hơn (0.76). Giá nhà trung bình ở mức tương đương cụm 0 (~391,607 USD).
-    """)
+    fig_pca, ax_pca = plt.subplots(figsize=(8, 5))
+    scatter = ax_pca.scatter(
+        X_train_pca[:, 0],
+        X_train_pca[:, 1],
+        c=train_df["Cluster"],
+        cmap="viridis",
+        alpha=0.6,
+        s=50,
+    )
+    ax_pca.scatter(
+        centroids_pca[:, 0],
+        centroids_pca[:, 1],
+        c="red",
+        marker="X",
+        s=200,
+        linewidths=2,
+        label="Tâm cụm (Centroids)",
+    )
+    ax_pca.set_title("Trực quan hóa các cụm nhà và Tâm cụm trong không gian 2D")
+    ax_pca.set_xlabel("Thành phần chính 1 (PCA 1)")
+    ax_pca.set_ylabel("Thành phần chính 2 (PCA 2)")
+    ax_pca.legend()
+    ax_pca.grid(True)
+    st.pyplot(fig_pca)
 
-# --- TAB 3: ĐÁNH GIÁ MÔ HÌNH TRÊN TẬP TEST ---
+# TAB 3: DỰ ĐOÁN & ĐÁNH GIÁ TRÊN TẬP TEST
 with tab3:
-    X_test = test_df[FEATURES]
-    y_test = test_df[TARGET]
+    st.subheader("1. Các chỉ số đánh giá trên tập Kiểm thử (Test)")
 
-    # Dự đoán cụm cho tập Test
-    test_df['Cluster_Pred'] = kmeans_model.predict(X_test)
-    test_df['SalePrice_Pred'] = test_df['Cluster_Pred'].map(cluster_price_map)
+    mae = mean_absolute_error(test_df[target], test_df["Predicted_SalePrice"])
+    rmse = np.sqrt(
+        mean_squared_error(test_df[target], test_df["Predicted_SalePrice"])
+    )
+    r2 = r2_score(test_df[target], test_df["Predicted_SalePrice"])
 
-    # Tính các chỉ số đánh giá
-    mae = mean_absolute_error(y_test, test_df['SalePrice_Pred'])
-    rmse = np.sqrt(mean_squared_error(y_test, test_df['SalePrice_Pred']))
-    r2 = r2_score(y_test, test_df['SalePrice_Pred'])
-
-    st.subheader("1. CÁC CHỈ SỐ ĐÁNH GIÁ TRÊN TẬP TEST (`nhom4_test_data.xlsx`)")
     m1, m2, m3 = st.columns(3)
-    m1.metric("MAE (Mean Absolute Error)", f"{mae:,.2f} USD")
-    m2.metric("RMSE (Root Mean Squared Error)", f"{rmse:,.2f} USD")
-    m3.metric("R² Score", f"{r2:.4f}")
+    m1.metric("MAE (Sai số tuyệt đối TB)", f"${mae:,.2f}")
+    m2.metric("RMSE (Căn sai số bình phương TB)", f"${rmse:,.2f}")
+    m3.metric("R² Score (Hệ số xác định)", f"{r2:.4f}")
 
-    st.subheader("2. BẢNG ĐỐI CHIẾU GIÁ THỰC TẾ VÀ GIÁ ƯỚC TÍNH (TEST DATA)")
-    result_display = test_df[FEATURES + [TARGET, 'Cluster_Pred', 'SalePrice_Pred']].copy()
-    result_display['SaiSố_TuyếtĐối'] = np.abs(result_display[TARGET] - result_display['SalePrice_Pred'])
-    st.dataframe(result_display.style.format({
-        TARGET: "{:,.0f}",
-        'SalePrice_Pred': "{:,.2f}",
-        'SaiSố_TuyếtĐối': "{:,.2f}"
-    }))
+    st.subheader(
+        "2. Bảng kết quả dự đoán chi tiết đối chiếu trên tập Test (nhom4_test_data.xlsx)"
+    )
+    test_display = test_df[
+        features
+        + [
+            target,
+            "Cluster",
+            "Predicted_SalePrice",
+        ]
+    ].copy()
+    test_display["Absolute_Error"] = np.abs(
+        test_display[target] - test_display["Predicted_SalePrice"]
+    )
+    st.dataframe(test_display)
 
-    st.subheader("3. BIỂU ĐỒ SO SÁNH GIÁ THỰC TẾ VS GIÁ DỰ ĐOÁN")
-    fig_comp, ax_comp = plt.subplots(figsize=(8, 4))
-    ax_comp.scatter(y_test, test_df['SalePrice_Pred'], alpha=0.6, color='darkorange', label='Mẫu dữ liệu Test')
-    ax_comp.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'k--', lw=2, label='Đường lý tưởng (Actual = Predicted)')
-    ax_comp.set_xlabel("Giá nhà Thực tế (SalePrice Actual)")
-    ax_comp.set_ylabel("Giá nhà Dự đoán (SalePrice Predicted)")
-    ax_comp.set_title("So sánh Giá thực tế vs Giá ước tính từ K-Means")
+    st.subheader("3. Biểu đồ so sánh Giá thực tế và Giá ước tính")
+    fig_comp, ax_comp = plt.subplots(figsize=(9, 4.5))
+    ax_comp.plot(
+        range(len(test_df)),
+        test_df[target],
+        label="Giá thực tế (Actual)",
+        color="blue",
+        alpha=0.7,
+    )
+    ax_comp.plot(
+        range(len(test_df)),
+        test_df["Predicted_SalePrice"],
+        label="Giá dự đoán (Predicted)",
+        color="orange",
+        linestyle="--",
+        linewidth=2,
+    )
+    ax_comp.set_title(
+        "So sánh Giá nhà Thực tế vs Giá nhà Dự đoán theo thuật toán K-Means"
+    )
+    ax_comp.set_xlabel("Chỉ số mẫu nhà trong tập Test")
+    ax_comp.set_ylabel("Giá nhà (SalePrice)")
     ax_comp.legend()
+    ax_comp.grid(True)
     st.pyplot(fig_comp)
 
-# --- TAB 4: DỰ ĐOÁN NHÀ MỚI ---
+# TAB 4: DỰ ĐOÁN CHO NHÀ MỚI NGHỆ THUẬT
 with tab4:
-    st.subheader("DỰ ĐOÁN GIÁ CHO CẤU HÌNH NHÀ ĐÃ NHẬP Ở SIDEBAR")
-    input_data = pd.DataFrame([user_input])
-    
-    # Tính khoảng cách tới các centroid
-    input_cluster = kmeans_model.predict(input_data)[0]
-    predicted_price = cluster_price_map[input_cluster]
+    st.subheader("Dự đoán giá cho một ngôi nhà mới bất kỳ")
+    c1, c2, c3 = st.columns(3)
+    in_qual = c1.number_input("OverallQual (Chất lượng)", value=0.0, step=0.1)
+    in_area = c2.number_input("GrLivArea (Diện tích sống)", value=0.0, step=0.1)
+    in_cars = c3.number_input(
+        "GarageCars (Sức chứa Garage)", value=0.0, step=0.1
+    )
 
-    st.write("##### Thông số nhập vào:")
-    st.table(input_data)
+    c4, c5 = st.columns(2)
+    in_bsmt = c4.number_input("TotalBsmtSF (Diện tích hầm)", value=0.0, step=0.1)
+    in_age = c5.number_input("HouseAge (Tuổi thọ nhà)", value=0.0, step=0.1)
 
-    col_res1, col_res2 = st.columns(2)
-    col_res1.success(f"🏡 **Cụm thuộc về:** Cụm {input_cluster}")
-    col_res2.info(f"💵 **Giá nhà dự đoán:** {predicted_price:,.2f} USD")
+    if st.button("Dự đoán giá nhà ngay"):
+        sample = np.array([[in_qual, in_area, in_cars, in_bsmt, in_age]])
+        pred_cluster = kmeans.predict(sample)[0]
+        pred_price = cluster_price_map[pred_cluster]
+
+        st.success(f"🏠 Ngôi nhà thuộc **Cụm {pred_cluster}**")
+        st.info(f"💵 Giá dự đoán ước tính: **${pred_price:,.2f}**")
